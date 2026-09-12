@@ -9,6 +9,7 @@ from torch import optim
 from torch.nn import BatchNorm1d, Dropout, LeakyReLU, Linear, Module, ReLU, Sequential, functional
 from tqdm import tqdm
 
+from ctgan.condicional_dataset import CondicionalDataset, CondicionalSampler
 from ctgan.data_sampler import DataSampler
 from ctgan.data_transformer import DataTransformer
 from ctgan.errors import InvalidDataError
@@ -344,8 +345,12 @@ class CTGAN(BaseSynthesizer):
 
         train_data = self._transformer.transform(train_data)
 
-        self._data_sampler = DataSampler(
-            train_data, self._transformer.output_info_list, self._log_frequency
+        # Criar dataset com conversão ÚNICA para tensor
+        condicional_dataset = CondicionalDataset(train_data, self._device)
+
+        # Sampler condicional opera sobre tensores
+        self._data_sampler = CondicionalSampler(
+            condicional_dataset, self._transformer.output_info_list, self._log_frequency
         )
 
         data_dim = self._transformer.output_dimensions
@@ -384,7 +389,7 @@ class CTGAN(BaseSynthesizer):
                 description.format(gen=_format_score(0), dis=_format_score(0))
             )
 
-        steps_per_epoch = max(len(train_data) // self._batch_size, 1)
+        steps_per_epoch = max(len(condicional_dataset) // self._batch_size, 1)
         for i in epoch_iterator:
             for id_ in range(steps_per_epoch):
                 for n in range(self._discriminator_steps):
@@ -394,7 +399,7 @@ class CTGAN(BaseSynthesizer):
                     if condvec is None:
                         c1, m1, col, opt = None, None, None, None
                         real = self._data_sampler.sample_data(
-                            train_data, self._batch_size, col, opt
+                            self._batch_size, col, opt
                         )
                     else:
                         c1, m1, col, opt = condvec
@@ -405,14 +410,14 @@ class CTGAN(BaseSynthesizer):
                         perm = np.arange(self._batch_size)
                         np.random.shuffle(perm)
                         real = self._data_sampler.sample_data(
-                            train_data, self._batch_size, col[perm], opt[perm]
+                            self._batch_size, col[perm], opt[perm]
                         )
                         c2 = c1[perm]
 
                     fake = self._generator(fakez)
                     fakeact = self._apply_activate(fake)
 
-                    real = torch.from_numpy(real.astype('float32')).to(self._device)
+                    # real já é tensor PyTorch — sem conversão
 
                     if c1 is not None:
                         fake_cat = torch.cat([fakeact, c1], dim=1)
