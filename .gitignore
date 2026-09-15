@@ -10,6 +10,7 @@ __pycache__/
 *.so
 .opencode
 graphify-out
+benchmark_output/
 # Distribution / packaging
 .Python
 env/
