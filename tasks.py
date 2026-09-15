@@ -1,7 +1,6 @@
 import inspect
 import operator
 import os
-import platform
 import shutil
 import stat
 import sys
@@ -13,7 +12,6 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 COMPARISONS = {'>=': operator.ge, '>': operator.gt, '<': operator.lt, '<=': operator.le}
-EXTERNAL_DEPENDENCY_CAPS_FOR_WINDOWS = {'torch': '2.9.0'}
 
 if not hasattr(inspect, 'getargspec'):
     inspect.getargspec = inspect.getfullargspec
@@ -98,9 +96,6 @@ def install_minimum(c):
     if minimum_versions:
         install_deps = ' '.join(minimum_versions)
         c.run(f'python -m pip install {install_deps}')
-        if platform.system() == 'Windows' and sys.version_info < (3,14):
-            for dep, cap in EXTERNAL_DEPENDENCY_CAPS_FOR_WINDOWS.items():
-                c.run(f'python -m pip install "{dep}<{cap}"')
 @task
 def minimum(c):
     install_minimum(c)

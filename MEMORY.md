@@ -10,14 +10,14 @@
 ### CTGAN (Conditional Tabular GAN)
 - **Repositório**: https://github.com/sdv-dev/CTGAN
 - **Fork do usuário**: https://github.com/maxsonferovante/CTGAN
-- **Linguagem**: Python 3.14+, PyTorch, Pandas
+- **Linguagem**: Python 3.11–3.13, PyTorch, Pandas
 - **Propósito**: Geração de dados tabulares sintéticos usando GAN condicional
 - **Artigo**: "Modeling Tabular data using Conditional GAN" — Lei Xu et al. (arXiv:1907.00503v2)
 
 ### RDT (Reversible Data Transforms)
 - **Repositório**: https://github.com/sdv-dev/RDT
 - **Fork do usuário**: https://github.com/maxsonferovante/RDT
-- **Linguagem**: Python 3.14+, NumPy, Pandas, scikit-learn
+- **Linguagem**: Python 3.11–3.13, NumPy, Pandas, scikit-learn
 - **Propósito**: Transformação reversível de dados tabulares (normalização, encoding)
 - **Uso no CTGAN**: ClusterBasedNormalizer + OneHotEncoder para pré-processamento
 
@@ -239,7 +239,7 @@ from rdt.transformers.categorical import OneHotEncoder
 ## 11. Ambiente de Desenvolvimento
 
 ### Ferramentas
-- **Python**: 3.14.3 (`/Library/Frameworks/Python.framework/Versions/3.14/bin/python3`)
+- **Python**: 3.11–3.13 (ambiente local: `/Library/Frameworks/Python.framework/Versions/3.14/bin/python3`)
 - **Polars**: 1.44.2
 - **Docker**: 29.7.2 + Compose v5.4.0
 - **pytest**: 8.4.2
