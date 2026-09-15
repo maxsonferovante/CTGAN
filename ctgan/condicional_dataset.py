@@ -14,25 +14,83 @@ class CondicionalDataset(Dataset):
 
     Converte o dataset inteiro uma única vez, eliminando conversões
     repetidas NumPy → Tensor durante o treinamento.
+
+    A conversão inicial compartilha memória com o array NumPy de origem
+    (``torch.from_numpy``), portanto não há cópia extra quando os dados já
+    são ``float32``. A referência NumPy é liberada após ``to()`` sempre que
+    os dados forem efetivamente copiados (pin/transferência para device).
     """
 
-    def __init__(self, data_numpy, device='cpu'):
+    def __init__(self, data_numpy, device='cpu', pin_memory=False, keep_on_cpu=False):
         """Converte o dataset inteiro para tensor uma única vez.
 
         Args:
             data_numpy: array NumPy de forma (n_rows, n_features)
-            device: device PyTorch ('cpu' ou 'cuda')
+            device: device PyTorch de destino ('cpu' ou 'cuda')
+            pin_memory: se True, usa memória paginada (pinned) na CPU para
+                transferências assíncronas por batch
+            keep_on_cpu: se True, mantém os dados na CPU mesmo com ``device``
+                em GPU, transferindo apenas cada batch sob demanda (útil para
+                tabelas maiores que a VRAM)
         """
-        self.data = torch.from_numpy(
-            data_numpy.astype('float32')
-        ).to(device)
+        if data_numpy.dtype != np.float32:
+            data_numpy = data_numpy.astype('float32')
+        if not data_numpy.flags['C_CONTIGUOUS']:
+            data_numpy = np.ascontiguousarray(data_numpy)
+
+        self._data_numpy = data_numpy
+        # Compartilha o buffer NumPy — nenhuma cópia adicional.
+        self.data = torch.from_numpy(data_numpy)
+
         self.n_rows = self.data.shape[0]
+        self.n_features = self.data.shape[1]
+        self._target_device = torch.device(device)
+        self._keep_on_cpu = keep_on_cpu
+        self._pin_memory = pin_memory
+
+    @property
+    def data_numpy(self):
+        """Array NumPy de origem (disponível até os dados serem copiados)."""
+        if self._data_numpy is None:
+            raise RuntimeError(
+                'Os dados NumPy foram liberados após mover para o device. '
+                'Construa o CondicionalSampler antes de chamar .to().'
+            )
+        return self._data_numpy
+
+    def to(self, device=None):
+        """Move os dados para o device e libera a referência NumPy da CPU.
+
+        Deve ser chamado somente depois que o sampler já construiu seus
+        índices a partir de ``data_numpy``.
+        """
+        if device is not None:
+            self._target_device = torch.device(device)
+
+        copied = False
+
+        if self._pin_memory and not self.data.is_pinned():
+            self.data = self.data.pin_memory()
+            copied = True
+
+        if not self._keep_on_cpu and self._target_device.type != 'cpu':
+            self.data = self.data.to(self._target_device)
+            copied = True
+
+        if copied:
+            # Libera a referência NumPy (a de CPU ainda viva).
+            self._data_numpy = None
+
+        return self
 
     def __len__(self):
         return self.n_rows
 
     def __getitem__(self, idx):
-        return self.data[idx]
+        batch = self.data[idx]
+        if batch.device != self._target_device:
+            batch = batch.to(self._target_device, non_blocking=self.data.is_pinned())
+        return batch
 
 
 class CondicionalSampler:
@@ -40,6 +98,10 @@ class CondicionalSampler:
 
     Mantém a lógica de amostragem condicional do CTGAN original,
     mas opera diretamente sobre tensores já convertidos.
+
+    Os índices por categoria são armazenados em uma estrutura CSR única
+    (``indices int32`` + ``offsets``), construída a partir do array NumPy
+    original — sem round-trip GPU→CPU.
     """
 
     def __init__(self, dataset, output_info, log_frequency):
@@ -61,24 +123,9 @@ class CondicionalSampler:
         ])
 
         self._discrete_column_matrix_st = np.zeros(n_discrete_columns, dtype='int32')
-        self._rid_by_cat_cols = []
 
-        # Converter tensor para NumPy para indexação (necessário para np.nonzero)
-        data_numpy = dataset.data.cpu().numpy()
-
-        st = 0
-        for column_info in output_info:
-            if is_discrete_column(column_info):
-                span_info = column_info[0]
-                ed = st + span_info.dim
-
-                rid_by_cat = []
-                for j in range(span_info.dim):
-                    rid_by_cat.append(np.nonzero(data_numpy[:, st + j])[0])
-                self._rid_by_cat_cols.append(rid_by_cat)
-                st = ed
-            else:
-                st += sum([span_info.dim for span_info in column_info])
+        # C6: usa o array NumPy original em vez de trazê-lo de volta da GPU.
+        data_numpy = dataset.data_numpy
 
         # Preparar matriz de probabilidades
         max_category = max(
@@ -94,6 +141,11 @@ class CondicionalSampler:
             column_info[0].dim for column_info in output_info if is_discrete_column(column_info)
         ])
 
+        # C7: estrutura CSR única — indices int32 + offsets por categoria.
+        csr_indices = []
+        csr_offsets = np.zeros(self._n_categories + 1, dtype='int64')
+        global_category_id = 0
+
         st = 0
         current_id = 0
         current_cond_st = 0
@@ -101,7 +153,26 @@ class CondicionalSampler:
             if is_discrete_column(column_info):
                 span_info = column_info[0]
                 ed = st + span_info.dim
-                category_freq = np.sum(data_numpy[:, st:ed], axis=0)
+                block = data_numpy[:, st:ed]
+
+                # Código da categoria ativa em cada linha (one-hot).
+                codes = np.argmax(block, axis=1)
+                present = block[np.arange(block.shape[0]), codes] > 0
+                rows = np.flatnonzero(present)
+
+                # argsort do código agrupa as linhas por categoria de uma vez,
+                # substituindo o np.nonzero por coluna do código original.
+                order = np.argsort(codes[rows], kind='stable')
+                sorted_rows = rows[order].astype('int32')
+                counts = np.bincount(codes[rows], minlength=span_info.dim)
+
+                csr_indices.append(sorted_rows)
+                csr_offsets[global_category_id + 1: global_category_id + span_info.dim + 1] = (
+                    csr_offsets[global_category_id] + np.cumsum(counts)
+                )
+                global_category_id += span_info.dim
+
+                category_freq = np.sum(block, axis=0)
                 if log_frequency:
                     category_freq = np.log(category_freq + 1)
                 category_prob = category_freq / np.sum(category_freq)
@@ -113,6 +184,12 @@ class CondicionalSampler:
                 st = ed
             else:
                 st += sum([span_info.dim for span_info in column_info])
+
+        if csr_indices:
+            self._csr_indices = np.concatenate(csr_indices)
+        else:
+            self._csr_indices = np.zeros(0, dtype='int32')
+        self._csr_offsets = csr_offsets
 
     def _random_choice_prob_index(self, discrete_column_id):
         probs = self._discrete_column_category_prob[discrete_column_id]
@@ -177,11 +254,21 @@ class CondicionalSampler:
             idx = np.random.randint(self._data_length, size=n)
             return self._dataset[torch.tensor(idx, dtype=torch.long)]
 
-        idx = []
-        for c, o in zip(col, opt):
-            idx.append(np.random.choice(self._rid_by_cat_cols[c][o]))
+        # C8: sorteio vetorizado de offsets dentro dos ranges CSR.
+        col = np.asarray(col, dtype='int64')
+        opt = np.asarray(opt, dtype='int64')
+        global_cat = self._discrete_column_cond_st[col] + opt
+        starts = self._csr_offsets[global_cat]
+        ends = self._csr_offsets[global_cat + 1]
 
-        idx_tensor = torch.tensor(idx, dtype=torch.long)
+        spans = ends - starts
+        # Ranges vazios nunca são sorteados pelo condvec, mas evitamos
+        # estourar o array caso ocorram (span 0 → posição fixada em starts).
+        positions = starts + (np.random.rand(col.shape[0]) * np.maximum(spans, 1)).astype('int64')
+        np.clip(positions, 0, self._csr_indices.shape[0] - 1, out=positions)
+
+        idx = self._csr_indices[positions]
+        idx_tensor = torch.tensor(idx.astype('int64'), dtype=torch.long)
         return self._dataset[idx_tensor]
 
     def dim_cond_vec(self):

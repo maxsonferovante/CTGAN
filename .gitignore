@@ -8,7 +8,8 @@ __pycache__/
 
 # C extensions
 *.so
-
+.opencode
+graphify-out
 # Distribution / packaging
 .Python
 env/

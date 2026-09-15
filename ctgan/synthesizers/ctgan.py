@@ -345,13 +345,16 @@ class CTGAN(BaseSynthesizer):
 
         train_data = self._transformer.transform(train_data)
 
-        # Criar dataset com conversão ÚNICA para tensor
-        condicional_dataset = CondicionalDataset(train_data, self._device)
+        # Criar dataset com conversão ÚNICA para tensor (ainda na CPU)
+        condicional_dataset = CondicionalDataset(train_data)
 
-        # Sampler condicional opera sobre tensores
+        # Sampler condicional constrói índices a partir do NumPy original
         self._data_sampler = CondicionalSampler(
             condicional_dataset, self._transformer.output_info_list, self._log_frequency
         )
+
+        # Só agora move para o device e libera a referência NumPy de CPU
+        condicional_dataset.to(self._device)
 
         data_dim = self._transformer.output_dimensions
 
