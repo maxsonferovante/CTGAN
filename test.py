@@ -16,6 +16,8 @@ import platform
 import time
 
 import kagglehub
+import numpy as np
+import pandas as pd
 import torch
 
 from ctgan import CTGAN, TVAE
@@ -24,22 +26,50 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "benchmark_output")
 KAGGLE_DATASET = "computingvictor/transactions-fraud-datasets"
 KAGGLE_FILE = "transactions_data.csv"
-TRAIN_COLUMNS = ["amount", "use_chip", "merchant_state", "mcc"]
-DISCRETE_COLUMNS = ["use_chip", "merchant_state", "mcc"]
-MAX_TRAIN_ROWS = 200_000
+TRAIN_COLUMNS = ["amount", "use_chip", "merchant_city", "merchant_state", "mcc"]
+DISCRETE_COLUMNS = ["use_chip", "merchant_city", "merchant_state", "mcc"]
+MAX_TRAIN_ROWS = 100_000
+SAMPLE_SEED = 42
 N_SAMPLES = 1_100_000
 EPOCHS = 50
 BATCH_SIZE = 500
 
 
+def _count_rows(path):
+    """Count data rows in a CSV file without parsing it."""
+    lines = 0
+    with open(path, "rb") as file:
+        while block := file.read(1 << 20):
+            lines += block.count(b"\n")
+
+    return lines - 1
+
+
+def _random_sample(path, columns, n_rows, chunk_size=500_000, seed=SAMPLE_SEED):
+    """Return a uniform random sample of ``n_rows`` without loading the whole file."""
+    total = _count_rows(path)
+    if total <= n_rows:
+        return pd.read_csv(path, usecols=columns)
+
+    fraction = min(1.0, n_rows * 1.05 / total)
+    rng = np.random.default_rng(seed)
+    parts = []
+    for chunk in pd.read_csv(path, usecols=columns, chunksize=chunk_size):
+        selected = rng.random(len(chunk)) < fraction
+        if selected.any():
+            parts.append(chunk.loc[selected])
+
+    sample = pd.concat(parts, ignore_index=True)
+    if len(sample) > n_rows:
+        sample = sample.sample(n=n_rows, random_state=seed).reset_index(drop=True)
+
+    return sample
+
+
 def load_data():
-    """Download the Kaggle transactions dataset and prepare it for CTGAN."""
-    data = kagglehub.dataset_load(
-        kagglehub.KaggleDatasetAdapter.PANDAS,
-        KAGGLE_DATASET,
-        KAGGLE_FILE,
-        pandas_kwargs={"usecols": TRAIN_COLUMNS, "nrows": MAX_TRAIN_ROWS},
-    )
+    """Download the Kaggle transactions dataset and prepare a random training sample."""
+    data_path = kagglehub.dataset_download(KAGGLE_DATASET, path=KAGGLE_FILE)
+    data = _random_sample(data_path, TRAIN_COLUMNS, MAX_TRAIN_ROWS)
     data["amount"] = (
         data["amount"]
         .astype(str)
@@ -47,11 +77,10 @@ def load_data():
         .str.replace(",", "", regex=False)
         .astype(float)
     )
-    data["use_chip"] = data["use_chip"].astype(str)
-    data["merchant_state"] = data["merchant_state"].fillna("Unknown").astype(str)
-    data["mcc"] = data["mcc"].astype(str)
+    for column in ("use_chip", "merchant_city", "merchant_state", "mcc"):
+        data[column] = data[column].fillna("Unknown").astype(str)
 
-    return data[TRAIN_COLUMNS]
+    return data[TRAIN_COLUMNS].dropna().reset_index(drop=True)
 
 
 def resolve_device():
