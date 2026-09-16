@@ -212,7 +212,7 @@ def main():
     results = [
         run(
             "CTGAN",
-            CTGAN(epochs=EPOCHS, batch_size=BATCH_SIZE, enable_gpu=True),
+            CTGAN(epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=True, enable_gpu=True),
             data,
             N_SAMPLES,
             OUTPUT_DIR,
@@ -224,7 +224,7 @@ def main():
     results.append(
         run(
             "TVAE",
-            TVAE(epochs=EPOCHS, batch_size=BATCH_SIZE, enable_gpu=True),
+            TVAE(epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=True, enable_gpu=True),
             data,
             N_SAMPLES,
             OUTPUT_DIR,
