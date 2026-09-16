@@ -30,7 +30,7 @@ TRAIN_COLUMNS = ["amount", "use_chip", "merchant_city", "merchant_state", "mcc"]
 DISCRETE_COLUMNS = ["use_chip", "merchant_city", "merchant_state", "mcc"]
 MAX_TRAIN_ROWS = 100_000
 SAMPLE_SEED = 42
-N_SAMPLES = 1_100_000
+N_SAMPLES = 100_000
 EPOCHS = 50
 BATCH_SIZE = 500
 
@@ -81,6 +81,73 @@ def load_data():
         data[column] = data[column].fillna("Unknown").astype(str)
 
     return data[TRAIN_COLUMNS].dropna().reset_index(drop=True)
+
+
+def _entropy(counts):
+    probabilities = counts / counts.sum()
+    return float(-(probabilities * np.log(probabilities)).sum())
+
+
+def _save_json(path, payload):
+    with open(path, "w") as file:
+        json.dump(payload, file, indent=2)
+
+    return path
+
+
+def compute_statistics(data):
+    """Return descriptive statistics for every column of ``data``."""
+    statistics = {
+        "rows": int(len(data)),
+        "columns": list(data.columns),
+        "numeric": {},
+        "categorical": {},
+    }
+    for column in data.columns:
+        series = data[column]
+        if pd.api.types.is_numeric_dtype(series):
+            statistics["numeric"][column] = {
+                "count": int(series.count()),
+                "mean": float(series.mean()),
+                "std": float(series.std()),
+                "variance": float(series.var()),
+                "min": float(series.min()),
+                "q25": float(series.quantile(0.25)),
+                "median": float(series.median()),
+                "q75": float(series.quantile(0.75)),
+                "max": float(series.max()),
+                "skew": float(series.skew()),
+                "kurtosis": float(series.kurtosis()),
+            }
+        else:
+            counts = series.value_counts()
+            statistics["categorical"][column] = {
+                "count": int(series.count()),
+                "unique": int(series.nunique()),
+                "mode": str(counts.index[0]) if len(counts) else None,
+                "mode_frequency": int(counts.iloc[0]) if len(counts) else 0,
+                "mode_ratio": float(counts.iloc[0] / len(series)) if len(series) else 0.0,
+                "entropy": _entropy(counts) if len(counts) else 0.0,
+                "top_values": {str(key): int(value) for key, value in counts.head(10).items()},
+            }
+
+    return statistics
+
+
+def print_statistics(label, statistics):
+    """Print a compact summary of ``compute_statistics`` output."""
+    print(f"\n--- statistics: {label} ---")
+    for column, values in statistics["numeric"].items():
+        print(
+            f"{column}: mean={values['mean']:,.2f} median={values['median']:,.2f} "
+            f"std={values['std']:,.2f} min={values['min']:,.2f} max={values['max']:,.2f} "
+            f"skew={values['skew']:,.2f}"
+        )
+    for column, values in statistics["categorical"].items():
+        print(
+            f"{column}: unique={values['unique']} mode={values['mode']!r} "
+            f"({values['mode_ratio']:.1%}) entropy={values['entropy']:.2f}"
+        )
 
 
 def resolve_device():
@@ -219,6 +286,13 @@ def run(name, model, data, n_samples, output_dir):
         f"csv saved            : {csv_path} ({csv_size_mb:,.1f} MB, {save_time:,.2f} s)"
     )
 
+    statistics = compute_statistics(synthetic)
+    stats_path = _save_json(
+        os.path.join(output_dir, f"stats_{name.lower()}.json"), statistics
+    )
+    print_statistics(name, statistics)
+    print(f"stats saved          : {stats_path}")
+
     return {
         "model": name,
         "device": str(model._device),
@@ -234,6 +308,7 @@ def run(name, model, data, n_samples, output_dir):
         "gpu_peak_reserved_mb": round(gpu["peak_reserved"], 1) if gpu else None,
         "csv_path": csv_path,
         "csv_size_mb": round(csv_size_mb, 1),
+        "statistics_path": stats_path,
     }
 
 
@@ -253,6 +328,11 @@ def main():
     data = load_data()
     print(f"dataset  : {KAGGLE_DATASET}::{KAGGLE_FILE}")
     print(f"rows/cols: {data.shape[0]:,} / {data.shape[1]}")
+
+    real_statistics = compute_statistics(data)
+    real_stats_path = _save_json(os.path.join(OUTPUT_DIR, "stats_real.json"), real_statistics)
+    print_statistics("real", real_statistics)
+    print(f"stats real : {real_stats_path}")
 
     results = [
         run(
@@ -301,6 +381,7 @@ def main():
         "requested_samples": N_SAMPLES,
         "epochs": EPOCHS,
         "batch_size": BATCH_SIZE,
+        "statistics_real_path": real_stats_path,
         "results": results,
     }
     json_path = os.path.join(OUTPUT_DIR, "benchmark_report.json")
@@ -308,8 +389,10 @@ def main():
         json.dump(report, report_file, indent=2)
 
     print(f"\njson report : {json_path}")
+    print(f"stats real  : {real_stats_path}")
     for result in results:
         print(f'csv output  : {result["csv_path"]}')
+        print(f'stats output: {result["statistics_path"]}')
 
 
 if __name__ == "__main__":
