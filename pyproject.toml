@@ -26,6 +26,7 @@ dependencies = [
     'tqdm>=4.70.1',
     "rdt>=1.22.0",
     "joblib>=1.6.0",
+    "kagglehub[pandas-datasets]>=1.0.2",
 ]
 
 [tool.uv.sources]

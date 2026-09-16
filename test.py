@@ -1,7 +1,8 @@
-"""Benchmark CTGAN and TVAE on the bundled Adult dataset using the GPU.
+"""Benchmark CTGAN and TVAE on a real transactions dataset using the GPU.
 
-Fits both synthesizers on ``examples/csv/adult.csv``, generates more than
-1,000,000 synthetic rows with each one and reports timing and memory usage.
+Downloads ``computingvictor/transactions-fraud-datasets`` from Kaggle via
+``kagglehub``, fits both synthesizers on the transaction records, generates more
+than 1,000,000 synthetic rows with each one and reports timing and memory usage.
 
 Run it directly with:
 
@@ -14,28 +15,43 @@ import os
 import platform
 import time
 
-import pandas as pd
+import kagglehub
 import torch
 
 from ctgan import CTGAN, TVAE
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, "examples", "csv", "adult.csv")
 OUTPUT_DIR = os.path.join(BASE_DIR, "benchmark_output")
+KAGGLE_DATASET = "computingvictor/transactions-fraud-datasets"
+KAGGLE_FILE = "transactions_data.csv"
+TRAIN_COLUMNS = ["amount", "use_chip", "merchant_state", "mcc"]
+DISCRETE_COLUMNS = ["use_chip", "merchant_state", "mcc"]
+MAX_TRAIN_ROWS = 200_000
 N_SAMPLES = 1_100_000
 EPOCHS = 50
 BATCH_SIZE = 500
-DISCRETE_COLUMNS = [
-    "workclass",
-    "education",
-    "marital-status",
-    "occupation",
-    "relationship",
-    "race",
-    "sex",
-    "native-country",
-    "income",
-]
+
+
+def load_data():
+    """Download the Kaggle transactions dataset and prepare it for CTGAN."""
+    data = kagglehub.dataset_load(
+        kagglehub.KaggleDatasetAdapter.PANDAS,
+        KAGGLE_DATASET,
+        KAGGLE_FILE,
+        pandas_kwargs={"usecols": TRAIN_COLUMNS, "nrows": MAX_TRAIN_ROWS},
+    )
+    data["amount"] = (
+        data["amount"]
+        .astype(str)
+        .str.replace("$", "", regex=False)
+        .str.replace(",", "", regex=False)
+        .astype(float)
+    )
+    data["use_chip"] = data["use_chip"].astype(str)
+    data["merchant_state"] = data["merchant_state"].fillna("Unknown").astype(str)
+    data["mcc"] = data["mcc"].astype(str)
+
+    return data[TRAIN_COLUMNS]
 
 
 def resolve_device():
@@ -205,8 +221,8 @@ def main():
     elif device == "cpu":
         print("warning  : no GPU detected, running on CPU")
 
-    data = pd.read_csv(DATA_PATH)
-    print(f"dataset  : {DATA_PATH}")
+    data = load_data()
+    print(f"dataset  : {KAGGLE_DATASET}::{KAGGLE_FILE}")
     print(f"rows/cols: {data.shape[0]:,} / {data.shape[1]}")
 
     results = [
@@ -249,7 +265,7 @@ def main():
         "torch_version": torch.__version__,
         "device": device,
         "gpu": gpu_name,
-        "dataset": DATA_PATH,
+        "dataset": f"{KAGGLE_DATASET}::{KAGGLE_FILE}",
         "dataset_rows": int(data.shape[0]),
         "dataset_columns": int(data.shape[1]),
         "discrete_columns": DISCRETE_COLUMNS,
