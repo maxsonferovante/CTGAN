@@ -55,7 +55,7 @@ def resolve_device():
 
 
 def process_rss_mb():
-    """Best-effort resident memory of this process, in MB."""
+    """Best-effort resident memory of this process, in MB, or ``None``."""
     try:
         import psutil
 
@@ -73,11 +73,12 @@ def process_rss_mb():
 
     if platform.system() == "Windows":
         try:
+            from ctypes import wintypes
 
             class Counters(ctypes.Structure):
                 _fields_ = [
-                    ("cb", ctypes.c_ulong),
-                    ("PageFaultCount", ctypes.c_ulong),
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
                     ("PeakWorkingSetSize", ctypes.c_size_t),
                     ("WorkingSetSize", ctypes.c_size_t),
                     ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
@@ -88,18 +89,27 @@ def process_rss_mb():
                     ("PeakPagefileUsage", ctypes.c_size_t),
                 ]
 
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            psapi = ctypes.WinDLL("psapi", use_last_error=True)
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE,
+                ctypes.POINTER(Counters),
+                wintypes.DWORD,
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+
             counters = Counters()
             counters.cb = ctypes.sizeof(counters)
-            ctypes.windll.psapi.GetProcessMemoryInfo(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                ctypes.byref(counters),
-                counters.cb,
+            success = psapi.GetProcessMemoryInfo(
+                kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
             )
-            return counters.WorkingSetSize / 1e6
+            if success:
+                return counters.WorkingSetSize / 1e6
         except Exception:
             pass
 
-    return float("nan")
+    return None
 
 
 def gpu_memory_mb():
@@ -148,7 +158,9 @@ def run(name, model, data, n_samples, output_dir):
     print(f"sample time          : {sample_time:,.2f} s")
     print(f"sample throughput    : {throughput:,.0f} rows/s")
     print(f"total time           : {fit_time + sample_time:,.2f} s")
-    print(f"CPU RSS before/after : {rss_before:,.1f} / {rss_after:,.1f} MB")
+    rss_before_text = f"{rss_before:,.1f}" if rss_before is not None else "n/a"
+    rss_after_text = f"{rss_after:,.1f}" if rss_after is not None else "n/a"
+    print(f"CPU RSS before/after : {rss_before_text} / {rss_after_text} MB")
     if gpu:
         print(
             f'GPU allocated        : {gpu["allocated"]:,.1f} MB '
@@ -171,8 +183,8 @@ def run(name, model, data, n_samples, output_dir):
         "save_time_s": round(save_time, 3),
         "total_time_s": round(fit_time + sample_time + save_time, 3),
         "rows_per_second": round(throughput, 1),
-        "cpu_rss_before_mb": round(rss_before, 1),
-        "cpu_rss_after_mb": round(rss_after, 1),
+        "cpu_rss_before_mb": round(rss_before, 1) if rss_before is not None else None,
+        "cpu_rss_after_mb": round(rss_after, 1) if rss_after is not None else None,
         "gpu_peak_allocated_mb": round(gpu["peak_allocated"], 1) if gpu else None,
         "gpu_peak_reserved_mb": round(gpu["peak_reserved"], 1) if gpu else None,
         "csv_path": csv_path,
